@@ -14,8 +14,49 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  health-check:
+  select-check-count:
     runs-on: ubuntu-latest
+    outputs:
+      count: ${{ steps.select.outputs.count }}
+      matrix: ${{ steps.select.outputs.matrix }}
+
+    steps:
+      - name: Select weighted daily check count
+        id: select
+        shell: bash
+        run: |
+          roll="$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')"
+          roll="$((roll % 100))"
+
+          # Weighted distribution:
+          # 1: 5%, 2: 20%, 3: 40%, 4: 20%, 5: 10%, 6: 5%
+          if (( roll < 5 )); then
+            count=1
+          elif (( roll < 25 )); then
+            count=2
+          elif (( roll < 65 )); then
+            count=3
+          elif (( roll < 85 )); then
+            count=4
+          elif (( roll < 95 )); then
+            count=5
+          else
+            count=6
+          fi
+
+          matrix_items="$(seq 1 "${count}" | paste -sd, -)"
+          echo "Selected ${count} health checks (roll: ${roll})."
+          echo "count=${count}" >> "${GITHUB_OUTPUT}"
+          echo "matrix=[${matrix_items}]" >> "${GITHUB_OUTPUT}"
+
+  health-check:
+    needs: select-check-count
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        check: ${{ fromJSON(needs.select-check-count.outputs.matrix) }}
 
     steps:
       - name: Check out main
@@ -38,14 +79,28 @@ jobs:
       - name: Build
         run: npm run build
 
+  record-health:
+    needs:
+      - select-check-count
+      - health-check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
       - name: Record successful health check
         id: health-log
         shell: bash
+        env:
+          CHECK_COUNT: ${{ needs.select-check-count.outputs.count }}
         run: |
           health_date="$(TZ=Asia/Singapore date +%F)"
-          entry="- healthy ${health_date}"
+          entry="- healthy ${health_date} (${CHECK_COUNT} checks)"
 
-          if grep -Fqx -- "${entry}" HEALTH.md; then
+          if grep -Eq -- "^- healthy ${health_date}( |$)" HEALTH.md; then
             echo "No new health entry is needed for ${health_date}."
             echo "changed=false" >> "${GITHUB_OUTPUT}"
           else
