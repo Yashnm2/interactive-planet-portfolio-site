@@ -1,0 +1,69 @@
+name: Daily repository health
+
+on:
+  schedule:
+    # 00:15 Asia/Singapore (UTC+8)
+    - cron: "15 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-repository-health
+  cancel-in-progress: false
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Record successful health check
+        id: health-log
+        shell: bash
+        run: |
+          health_date="$(TZ=Asia/Singapore date +%F)"
+          entry="- healthy ${health_date}"
+
+          if grep -Fqx -- "${entry}" HEALTH.md; then
+            echo "No new health entry is needed for ${health_date}."
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          else
+            printf '%s\n' "${entry}" >> HEALTH.md
+            echo "Added health entry for ${health_date}."
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+          echo "date=${health_date}" >> "${GITHUB_OUTPUT}"
+
+      - name: Commit and push health log
+        if: steps.health-log.outputs.changed == 'true'
+        shell: bash
+        env:
+          HEALTH_DATE: ${{ steps.health-log.outputs.date }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add HEALTH.md
+          git commit -m "chore: record healthy status for ${HEALTH_DATE}"
+          git push origin HEAD:main
