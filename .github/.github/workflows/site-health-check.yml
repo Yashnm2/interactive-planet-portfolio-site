@@ -1,0 +1,60 @@
+name: Site Health Check
+
+on:
+  schedule:
+    # Every 3 days at 00:00 UTC
+    - cron: '0 0 */3 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check site status
+        id: check
+        run: |
+          URL="https://intentional-product-builder-portfolio.info26087.chatgpt.site/"
+          TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          HTTP_CODE=$(curl -L -s -o /dev/null -w "%{http_code}" --max-time 20 "$URL" || echo "000")
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 400 ]; then
+            STATUS="UP"
+          else
+            STATUS="DOWN"
+          fi
+
+          echo "timestamp=$TIMESTAMP" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure logs.md exists
+        run: |
+          if [ ! -f logs.md ]; then
+            echo "# Site Health Logs" > logs.md
+            echo "" >> logs.md
+          fi
+
+      - name: Append health log entry
+        run: |
+          echo "- ${{ steps.check.outputs.timestamp }} — ${{ steps.check.outputs.status }} (HTTP ${{ steps.check.outputs.http_code }})" >> logs.md
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git add logs.md
+          git commit -m "chore: update site health log"
+          git push
